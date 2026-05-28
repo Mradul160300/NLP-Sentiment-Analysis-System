@@ -1,0 +1,145 @@
+import os
+import re
+import pandas as pd
+import pickle
+import sqlite3
+from flask import Flask, render_template, request, jsonify
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+
+# --- NLTK Setup ---
+nltk.download('stopwords', quiet=True)
+nltk.download('wordnet', quiet=True)
+nltk.download('omw-1.4', quiet=True)
+
+# --- 1. Preprocessing Class (Combined) ---
+class TextPreprocessor:
+    def __init__(self):
+        self.lemmatizer = WordNetLemmatizer()
+        self.stop_words = set(stopwords.words('english'))
+
+    def clean_text(self, text):
+        if not isinstance(text, str): return ""
+        text = text.lower()
+        text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
+        text = re.sub(r'[^\w\s]', '', text)
+        tokens = text.split()
+        cleaned = [self.lemmatizer.lemmatize(w) for w in tokens if w not in self.stop_words]
+        return " ".join(cleaned)
+
+# --- 2. Recommendation Engine Class (Combined) ---
+class RemedyEngine:
+    def __init__(self):
+        self.remedy_db = {
+            "internet": {"description": "Network Issue", "remedy": "Escalate to Tech Support."},
+            "app": {"description": "Application Issue", "remedy": "Notify Dev Team."},
+            "delivery": {"description": "Logistics Issue", "remedy": "Offer discount coupon."},
+            "service": {"description": "Service Issue", "remedy": "Schedule callback."},
+            "product": {"description": "Product Issue", "remedy": "Initiate Return/Refund."},
+        }
+
+    def get_remedy(self, text, sentiment):
+        if sentiment != "negative": return "No action required."
+        text = text.lower()
+        for keyword, data in self.remedy_db.items():
+            if keyword in text:
+                return f"[{data['description']}] Action: {data['remedy']}"
+        return "General Feedback: Send to Support Queue."
+
+# --- 3. Database Functions (Combined) ---
+DB_NAME = "sentiment.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS analysis_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_text TEXT NOT NULL,
+            sentiment TEXT NOT NULL,
+            remedy TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+    print("✅ Database initialized.")
+
+def save_analysis(text, sentiment, remedy):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO analysis_history (user_text, sentiment, remedy) VALUES (?, ?, ?)", (text, sentiment, remedy))
+    conn.commit()
+    conn.close()
+
+def get_history(limit=5):
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM analysis_history ORDER BY id DESC LIMIT ?", (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+# --- 4. Flask App Setup ---
+import os
+# This code finds the folder where app.py is located
+template_dir = os.path.dirname(os.path.abspath(__file__))
+# This tells Flask to look for 'templates' exactly there
+app = Flask(__name__, template_folder=os.path.join(template_dir, 'templates'))
+MODEL_PATH = 'models/sentiment_model.pkl'
+DATA_PATH = 'data/social_media_comments.csv'
+
+init_db()
+
+# Auto-generate data if missing
+if not os.path.exists(DATA_PATH):
+    print("Generating dataset...")
+    os.makedirs('data', exist_ok=True)
+    data = [
+        ("My internet is so slow.", "negative"), ("App crashes constantly.", "negative"),
+        ("Great service!", "positive"), ("I love this product.", "positive")
+    ]
+    pd.DataFrame(data, columns=['text', 'sentiment']).to_csv(DATA_PATH, index=False)
+
+# Auto-train model if missing
+if not os.path.exists(MODEL_PATH):
+    print("Training model...")
+    os.makedirs('models', exist_ok=True)
+    df = pd.read_csv(DATA_PATH)
+    preprocessor = TextPreprocessor()
+    df['clean_text'] = df['text'].apply(preprocessor.clean_text)
+    vectorizer = TfidfVectorizer(max_features=1000)
+    X = vectorizer.fit_transform(df['clean_text'])
+    model = LogisticRegression()
+    model.fit(X, df['sentiment'])
+    pickle.dump((vectorizer, model), open(MODEL_PATH, 'wb'))
+    print("✅ Model trained!")
+
+# Load Model
+vectorizer, model = pickle.load(open(MODEL_PATH, 'rb'))
+preprocessor = TextPreprocessor()
+engine = RemedyEngine()
+
+@app.route('/')
+def home(): return render_template('index.html')
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    text = request.get_json().get('text', '')
+    clean = preprocessor.clean_text(text)
+    vec = vectorizer.transform([clean])
+    sentiment = model.predict(vec)[0]
+    remedy = engine.get_remedy(text, sentiment)
+    save_analysis(text, sentiment, remedy)
+    return jsonify({'sentiment': sentiment, 'remedy': remedy})
+
+@app.route('/history')
+def history():
+    return jsonify([dict(r) for r in get_history()])
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)

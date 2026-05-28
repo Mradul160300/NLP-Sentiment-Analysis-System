@@ -1,4 +1,3 @@
-# NLP-Sentiment-Analysis-System
 # SentimentIQ — AI-Powered Sentiment Analysis System
 
 SentimentIQ is a smart, easy-to-use tool designed to help you understand the emotions behind customer feedback, reviews, and comments. Whether you have thousands of reviews in a spreadsheet or just want to test a single sentence, SentimentIQ will tell you if the sentiment is **Positive**, **Negative**, or **Neutral**.
